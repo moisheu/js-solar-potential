@@ -53,16 +53,85 @@
   let requestError: RequestError | undefined;
   let apiResponseDialog: MdDialog;
 
+  // Add new controls
+  let showSegments = true;
+  let segmentFilter = "";
+  let disableAnimation = true;
+  let showSolarPotentialLayer = true; // Always true, no longer toggleable or exported
+
+  // Make each toggle directly update the visibility
+  function updatePanelVisibility() {
+    if (solarPanels.length === 0) return;
+    
+    solarPanels.forEach((panel, i) => {
+      if (disableAnimation) {
+        panel.setMap(showPanels ? map : null);
+      } else {
+        panel.setMap(showPanels && panelConfig && i < panelConfig.panelsCount ? map : null);
+      }
+    });
+  }
+  
+  function updateSegmentVisibility() {
+    if (roofSegmentPolygons.length === 0) return;
+    
+    const segmentNumbers = segmentFilter.trim() === "" ? 
+      null : 
+      segmentFilter.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+    
+    roofSegmentPolygons.forEach((segment) => {
+      // @ts-ignore - Using custom property
+      const segmentIndex = segment.segmentIndex;
+      const shouldShow = showSegments && 
+        (segmentNumbers === null || segmentNumbers.includes(segmentIndex));
+      segment.setMap(shouldShow ? map : null);
+    });
+    
+    roofSegmentLabels.forEach((label) => {
+      // @ts-ignore - Using custom property
+      const segmentIndex = label.segmentIndex;
+      const shouldShow = showSegments && 
+        (segmentNumbers === null || segmentNumbers.includes(segmentIndex));
+      label.setMap(shouldShow ? map : null);
+    });
+  }
+  
+  // React to toggle changes
+  $: if (showPanels !== undefined) {
+    // Make sure we update UI after toggle change is complete
+    setTimeout(() => updatePanelVisibility(), 0);
+  }
+  
+  $: if (disableAnimation !== undefined) {
+    // Make sure we update UI after toggle change is complete
+    setTimeout(() => updatePanelVisibility(), 0);
+  }
+  
+  $: if (showSegments !== undefined) {
+    // Make sure we update UI after toggle change is complete
+    setTimeout(() => updateSegmentVisibility(), 0);
+  }
+  
+  $: if (segmentFilter !== undefined) {
+    // Make sure we update UI after toggle change is complete
+    setTimeout(() => updateSegmentVisibility(), 0);
+  }
+
   let panelConfig: SolarPanelConfig | undefined;
   $: if (buildingInsights && configId !== undefined) {
     panelConfig = buildingInsights.solarPotential.solarPanelConfigs[configId];
   }
 
   let solarPanels: google.maps.Polygon[] = [];
-  $: solarPanels.map((panel, i) =>
-    panel.setMap(showPanels && panelConfig && i < panelConfig.panelsCount ? map : null),
-  );
+  $: if (solarPanels.length > 0) {
+    // Use our updatePanelVisibility helper to handle all panel visibility changes
+    updatePanelVisibility();
+  }
 
+  // Add variables for roof segments visualization
+  let roofSegmentPolygons: google.maps.Polygon[] = [];
+  let roofSegmentLabels: google.maps.Marker[] = [];
+  
   let panelCapacityRatio = 1.0;
   $: if (buildingInsights) {
     const defaultPanelCapacity = buildingInsights.solarPotential.panelCapacityWatts;
@@ -78,8 +147,15 @@
     buildingInsights = undefined;
     requestError = undefined;
 
+    // Clear existing visualizations
     solarPanels.map((panel) => panel.setMap(null));
     solarPanels = [];
+    
+    // Clear existing roof segment visualizations
+    roofSegmentPolygons.map((polygon) => polygon.setMap(null));
+    roofSegmentPolygons = [];
+    roofSegmentLabels.map((marker) => marker.setMap(null));
+    roofSegmentLabels = [];
 
     requestSent = true;
     try {
@@ -123,6 +199,177 @@
         fillOpacity: 0.9,
       });
     });
+    
+    // Create roof segment outlines and labels
+    // Group panels by segment index
+    const segmentPanels = new Map<number, SolarPanel[]>();
+    solarPotential.solarPanels.forEach(panel => {
+      if (!segmentPanels.has(panel.segmentIndex)) {
+        segmentPanels.set(panel.segmentIndex, []);
+      }
+      segmentPanels.get(panel.segmentIndex)?.push(panel);
+    });
+    
+    // Get all unique segment indices
+    const segmentIndices = Array.from(segmentPanels.keys());
+    
+    // Create a polygon for each roof segment
+    segmentPanels.forEach((panels, segmentIndex) => {
+      // Get the segment info
+      const segmentInfo = solarPotential.roofSegmentStats[segmentIndex];
+      
+      // Instead of using the bounding box directly, we'll create a rotated polygon
+      // based on the segment's azimuth
+      const azimuth = segmentInfo.azimuthDegrees;
+      
+      // Estimate the size of the segment based on the number of panels
+      // and their arrangement
+      const panelPositions = panels.map(panel => ({
+        lat: panel.center.latitude,
+        lng: panel.center.longitude
+      }));
+      
+      console.log(`Segment ${segmentIndex}: ${panels.length} panels, azimuth: ${azimuth}°`);
+      
+      // If we have panels in this segment, create a better outline
+      if (panelPositions.length > 0) {
+        // Find the center of the segment
+        const center = {
+          lat: segmentInfo.center.latitude,
+          lng: segmentInfo.center.longitude
+        };
+        
+        // Instead of using a simple square, we'll calculate a more accurate bounding shape
+        // First, convert all panel positions to x,y coordinates relative to the center
+        // This will allow us to find the actual dimensions of the segment
+        const relativePositions = panels.map(panel => {
+          const bearing = geometryLibrary.spherical.computeHeading(
+            center,
+            { lat: panel.center.latitude, lng: panel.center.longitude }
+          );
+          const distance = geometryLibrary.spherical.computeDistanceBetween(
+            center,
+            { lat: panel.center.latitude, lng: panel.center.longitude }
+          );
+          
+          // Adjust the bearing by subtracting the azimuth to align with the roof orientation
+          const adjustedBearing = bearing - azimuth;
+          const radians = adjustedBearing * Math.PI / 180;
+          
+          // Calculate x,y coordinates (rotated to align with roof orientation)
+          return {
+            x: distance * Math.sin(radians),
+            y: distance * Math.cos(radians)
+          };
+        });
+        
+        // Find the min/max x and y values to create a tight bounding box
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        
+        relativePositions.forEach(pos => {
+          minX = Math.min(minX, pos.x);
+          maxX = Math.max(maxX, pos.x);
+          minY = Math.min(minY, pos.y);
+          maxY = Math.max(maxY, pos.y);
+        });
+        
+        // Log size information for debugging
+        const width = maxX - minX;
+        const height = maxY - minY;
+        console.log(`Segment ${segmentIndex} dimensions: ${width.toFixed(2)}m × ${height.toFixed(2)}m`);
+        
+        // Add a small padding (10%)
+        const paddingX = (maxX - minX) * 0.1;
+        const paddingY = (maxY - minY) * 0.1;
+        
+        minX -= paddingX;
+        maxX += paddingX;
+        minY -= paddingY;
+        maxY += paddingY;
+        
+        // Ensure a minimum size for very small segments (like segment 7)
+        const minSize = 2.0; // Minimum size in meters
+        if (maxX - minX < minSize) {
+          const center = (maxX + minX) / 2;
+          minX = center - minSize/2;
+          maxX = center + minSize/2;
+        }
+        if (maxY - minY < minSize) {
+          const center = (maxY + minY) / 2;
+          minY = center - minSize/2;
+          maxY = center + minSize/2;
+        }
+        
+        // Create the corners of the bounding box
+        const corners = [
+          { x: minX, y: minY }, // bottom left
+          { x: maxX, y: minY }, // bottom right
+          { x: maxX, y: maxY }, // top right
+          { x: minX, y: maxY }, // top left
+        ];
+        
+        // Create the polygon with rotated points
+        const segmentPolygon = new google.maps.Polygon({
+          paths: corners.map(({ x, y }) => {
+            // Calculate the distance from center
+            const distance = Math.sqrt(x * x + y * y);
+            // Calculate the bearing in the rotated coordinate system
+            let bearing = Math.atan2(x, y) * (180 / Math.PI);
+            // Add back the azimuth to get the actual bearing
+            bearing += azimuth;
+            
+            // Convert back to lat/lng
+            return geometryLibrary.spherical.computeOffset(
+              center,
+              distance,
+              bearing
+            );
+          }),
+          strokeColor: '#FF0000',
+          strokeOpacity: 1.0,
+          strokeWeight: 4, // Increase stroke weight for better visibility
+          fillColor: '#FF0000',
+          fillOpacity: 0.15, // Slightly increase fill opacity
+          zIndex: 1 // Make sure segments are below panels
+        });
+        
+        // Store the segment index with the polygon for reference
+        // @ts-ignore - Adding custom property
+        segmentPolygon.segmentIndex = segmentIndex;
+        
+        // Create a label for the segment
+        const label = new google.maps.Marker({
+          position: center,
+          label: {
+            text: `${segmentIndex}`,
+            color: 'white',
+            fontSize: '16px',
+            fontWeight: 'bold'
+          },
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 12,
+            fillColor: '#FF0000',
+            fillOpacity: 1,
+            strokeWeight: 0
+          },
+          zIndex: 2 // Make sure labels are above segments
+        });
+        
+        // Store the segment index with the marker for reference
+        // @ts-ignore - Adding custom property
+        label.segmentIndex = segmentIndex;
+        
+        roofSegmentPolygons.push(segmentPolygon);
+        roofSegmentLabels.push(label);
+      }
+    });
+    
+    // Use our helper functions to update visibility based on current toggle states
+    setTimeout(() => {
+      updatePanelVisibility();
+      updateSegmentVisibility();
+    }, 50);
   }
 
   $: showSolarPotential(location);
@@ -176,9 +423,58 @@
         label="Panel capacity"
         suffix="Watts"
       />
-      <InputBool bind:value={showPanels} label="Solar panels" />
-
-      <div class="grid justify-items-end">
+      
+      <!-- Integrated visualization controls -->
+      <div class="border-t border-outline my-2"></div>
+      <h3 class="title-small">Visualization Options</h3>
+      
+      <InputBool 
+        bind:value={showPanels} 
+        label="Show Solar Panels" 
+        onChange={() => {
+          // Make sure the toggle state is properly applied
+          setTimeout(() => {
+            updatePanelVisibility();
+          }, 0);
+        }}
+      />
+      <InputBool 
+        bind:value={disableAnimation} 
+        label="Show All Panels (No Animation)" 
+        disabled={!showPanels}
+        onChange={() => {
+          // Make sure the toggle state is properly applied
+          setTimeout(() => {
+            updatePanelVisibility();
+          }, 0);
+        }}
+      />
+      <div class="border-t border-outline my-2"></div>
+      <h3 class="title-small">Roof Segments</h3>
+      <InputBool 
+        bind:value={showSegments} 
+        label="Show Roof Segments"
+        onChange={() => {
+          // Make sure the toggle state is properly applied
+          setTimeout(() => {
+            updateSegmentVisibility();
+          }, 0);
+        }}
+      />
+      
+      <div class="flex flex-col">
+        <label class="label-medium mb-1">Filter Segments (e.g. "0,1,2")</label>
+        <input 
+          type="text" 
+          bind:value={segmentFilter} 
+          class="px-3 py-2 border border-outline rounded-md"
+          placeholder="Enter segment numbers"
+          disabled={!showSegments}
+        />
+        <span class="label-small mt-1 text-outline">Comma-separated segment numbers</span>
+      </div>
+      
+      <div class="grid justify-items-end mt-2">
         <md-filled-tonal-button role={undefined} on:click={() => apiResponseDialog.show()}>
           API response
         </md-filled-tonal-button>

@@ -33,6 +33,7 @@
   // State
   let expandedSection: string = '';
   let showPanels = true;
+  const showSolarPotentialLayer = true;
 
   // User settings
   let monthlyAverageEnergyBillInput = 300;
@@ -77,6 +78,7 @@
     <DataLayersSection
       bind:expandedSection
       bind:showPanels
+      showLayers={true}
       {googleMapsApiKey}
       {buildingInsights}
       {geometryLibrary}

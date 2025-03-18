@@ -20,15 +20,26 @@
   export let label: string;
   export let value: boolean = false;
   export let onChange: (value: boolean) => void = () => {};
+  export let disabled: boolean = false;
 
   function onClick(event: Event) {
-    const target = event.target as MdSwitch;
-    value = target.selected;
-    onChange(value);
+    if (disabled) return;
+    
+    // Instead of preventing default, let's wait for the material component to update
+    setTimeout(() => {
+      // Get the current target state
+      const target = event.target as MdSwitch;
+      
+      // Update our value to match the switch state
+      value = target.selected;
+      
+      // Call the onChange handler with the new value
+      onChange(value);
+    }, 0);
   }
 </script>
 
 <label for={label} class="p-2 relative inline-flex items-center cursor-pointer">
-  <md-switch id={label} role={undefined} selected={value} on:click={onClick} />
+  <md-switch id={label} role={undefined} selected={value} on:click={onClick} disabled={disabled} />
   <span class="ml-3 body-large">{label}</span>
 </label>

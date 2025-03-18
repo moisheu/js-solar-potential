@@ -1,7 +1,11 @@
 .DS_Store
+# Environment files
 .env
+*.env
 .env.*
 !.env.example
+# Gitignore itself (uncomment if you want to ignore the gitignore file)
+# .gitignore
 .output
 .svelte-kit
 .vercel
@@ -12,3 +16,5 @@ package
 test-results
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+.history
+settings.json

@@ -38,6 +38,7 @@
 
   export let expandedSection: string;
   export let showPanels = true;
+  export let showLayers = true;
 
   export let googleMapsApiKey: string;
   export let buildingInsights: BuildingInsightsResponse;
@@ -87,7 +88,17 @@
 
   let overlays: google.maps.GroundOverlay[] = [];
   let showRoofOnly = false;
+  
+  $: if (!showLayers) {
+    overlays.forEach(overlay => overlay.setMap(null));
+  }
+  
   async function showDataLayer(reset = false) {
+    if (!showLayers) {
+      overlays.forEach(overlay => overlay.setMap(null));
+      return;
+    }
+    
     if (reset) {
       dataLayersResponse = undefined;
       requestError = undefined;
@@ -150,9 +161,9 @@
   }
 
   $: if (layer?.id == 'monthlyFlux') {
-    overlays.map((overlay, i) => overlay.setMap(i == month ? map : null));
+    overlays.map((overlay, i) => overlay.setMap(i == month && showLayers ? map : null));
   } else if (layer?.id == 'hourlyShade') {
-    overlays.map((overlay, i) => overlay.setMap(i == hour ? map : null));
+    overlays.map((overlay, i) => overlay.setMap(i == hour && showLayers ? map : null));
   }
 
   function onSliderChange(event: Event) {
@@ -185,6 +196,21 @@
       hour = tick % 24;
     } else {
       tick = hour;
+    }
+  }
+
+  // Also make sure the layer updates when showLayers changes
+  $: {
+    // Watching showLayers with a more reliable pattern
+    if (typeof showLayers !== 'undefined') {
+      // Use setTimeout to ensure the toggle state is properly processed
+      setTimeout(() => {
+        if (layerId !== 'none' && layer && showLayers) {
+          showDataLayer(false);
+        } else if (!showLayers && overlays.length > 0) {
+          overlays.forEach(overlay => overlay.setMap(null));
+        }
+      }, 0);
     }
   }
 
@@ -256,11 +282,39 @@
           {/if}
         </span>
 
-        <InputBool bind:value={showPanels} label="Solar panels" />
-        <InputBool bind:value={showRoofOnly} label="Roof only" onChange={() => showDataLayer()} />
+        <InputBool 
+          bind:value={showPanels} 
+          label="Solar panels" 
+          onChange={() => {
+            // Delay the update to ensure the toggle state is properly set
+            setTimeout(() => {
+              if (showPanels) {
+                showDataLayer(false);
+              } else {
+                overlays.forEach(overlay => overlay.setMap(null));
+              }
+            }, 0);
+          }}
+        />
+        
+        <InputBool 
+          bind:value={showRoofOnly} 
+          label="Roof only" 
+          onChange={() => {
+            // Delay the update to ensure the toggle state is properly set
+            setTimeout(() => showDataLayer(), 0);
+          }}
+        />
 
         {#if ['monthlyFlux', 'hourlyShade'].includes(layerId)}
-          <InputBool bind:value={playAnimation} label="Play animation" />
+          <InputBool 
+            bind:value={playAnimation} 
+            label="Play animation" 
+            onChange={() => {
+              // Reset tick to current value when toggling animation
+              tick = layerId === 'monthlyFlux' ? month : hour;
+            }}
+          />
         {/if}
       {/if}
       <div class="flex flex-row">
